@@ -130,6 +130,29 @@ function providerInWhitelist(
     return whitelist.includes(providerId);
 }
 
+// Names of every tool this extension registers. Used to hide the entire
+// suite from native-vision models so they don't get lured away from real
+// multimodal input (the LLM tool list is the leak — the context hook was
+// already gated, but registered tools are visible unconditionally).
+const PSEUDO_VISION_TOOLS = [
+    "vision_color_stats",
+    "vision_meta",
+    "vision_pixel_scan",
+    "vision_ocr",
+    "pseudo_vision_convert",
+] as const;
+
+function syncPseudoVisionTools(pi: ExtensionAPI, model: { input?: readonly string[] } | undefined): void {
+    if (!model) return;
+    const wantEnabled = !modelSupportsVision(model);
+    const active = new Set(pi.getActiveTools());
+    for (const name of PSEUDO_VISION_TOOLS) {
+        if (wantEnabled) active.add(name);
+        else active.delete(name);
+    }
+    pi.setActiveTools([...active]);
+}
+
 export default function (pi: ExtensionAPI) {
     const state = getState(pi);
     const config = readConfig(pi);
@@ -445,5 +468,18 @@ export default function (pi: ExtensionAPI) {
     // ------------------------------------------------------------------ //
     pi.on("session_shutdown", async () => {
         await disposeOcr().catch(() => undefined);
+    });
+
+    // ------------------------------------------------------------------ //
+    // Tool visibility — only expose pseudo-vision tools to text-only      //
+    // models. Native-vision models keep their real multimodal input and   //
+    // don't see this extension's tools at all (the context hook was       //
+    // already gated; registered tools were leaking).                      //
+    // ponytail: model_select only fires on change/restore, so initial      //
+    // state comes from pi.getModel() at startup.                          //
+    // ------------------------------------------------------------------ //
+    syncPseudoVisionTools(pi, pi.getModel());
+    pi.on("model_select", async (event) => {
+        syncPseudoVisionTools(pi, event.model);
     });
 }
