@@ -18,7 +18,7 @@
  * Ported from dsh-pseudo-vision by the same author.
  */
 
-import type { ExtensionAPI, ExtensionContext, ContextEvent } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ContextEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 
@@ -31,7 +31,7 @@ type MsgLike = {
 };
 
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -85,12 +85,20 @@ interface PiPseudoVisionConfig {
 }
 
 function readConfig(pi: ExtensionAPI): PiPseudoVisionConfig {
-    // Pi loads settings.json extensions via the SDK; the extension does not
-    // own its own schema, so look for a top-level `pi-pseudo-vision` field.
-    // We tolerate it being absent (all defaults).
-    const settings = pi as unknown as { settings?: { get?: (key: string) => unknown } };
-    const raw = settings.settings?.get?.("pi-pseudo-vision");
-    if (raw && typeof raw === "object") return raw as PiPseudoVisionConfig;
+    // Pi 0.84 exposes settings to the host, not as `pi.settings` on the
+    // ExtensionAPI. Keep the legacy probe for older runtimes, then read the
+    // global settings file through Pi's official agent-dir helper.
+    const legacySettings = pi as unknown as { settings?: { get?: (key: string) => unknown } };
+    const legacyRaw = legacySettings.settings?.get?.("pi-pseudo-vision");
+    if (legacyRaw && typeof legacyRaw === "object") return legacyRaw as PiPseudoVisionConfig;
+    try {
+        const settingsPath = join(getAgentDir(), "settings.json");
+        const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+        const raw = settings["pi-pseudo-vision"];
+        if (raw && typeof raw === "object") return raw as PiPseudoVisionConfig;
+    } catch {
+        // Missing or malformed settings must not prevent Pi from starting.
+    }
     return {};
 }
 
