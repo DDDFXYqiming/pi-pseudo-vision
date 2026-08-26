@@ -2,20 +2,18 @@
  * OCR via tesseract.js.
  *
  * Why tesseract.js: pure JS, no native binary, runs in-process inside the
- * Pi Node runtime. The same local engine powers the OCR evidence block.
+ * DSH Node worker. The same local engine powers the OCR evidence block.
  *
  * Output: an array of lines, each with a normalised bounding box
  * (x1, y1, x2, y2 in [0,1]) and the recognised text. Normalised coordinates
- * mirror what the Pi TUI shows so the model can correlate the line back
+ * mirror what the DSH Web UI shows so the model can correlate the line back
  * to a position in the original image.
- *
- * Ported from dsh-pseudo-vision by the same author.
  */
 
-import { createWorker, PSM, type Worker } from "tesseract.js";
-import sharp from "sharp";
+import { createWorker, PSM, type Worker } from 'tesseract.js';
+import sharp from 'sharp';
 
-const DEFAULT_LANGS = ["chi_sim+eng"] as const;
+const DEFAULT_LANGS = ['chi_sim+eng'] as const;
 
 // tesseract.js v5 expects the gzipped training data (`<lang>.traineddata.gz`).
 // Omit `langPath` so the worker uses its built-in cache directory under
@@ -51,7 +49,7 @@ let cachedDigitLangs: string | null = null;
 // glyph space, which is the dominant noise source for chi_sim+eng on
 // terminal-style ASCII text.
 const DIGIT_WHITELIST =
-    "0123456789.:/-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    '0123456789.:/-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 async function getDigitWorker(langs: string): Promise<Worker> {
     if (cachedDigitWorker && cachedDigitLangs === langs) return cachedDigitWorker;
@@ -94,7 +92,7 @@ export interface OcrResult {
     fullText: string;
 }
 
-export type NormalizedRegion = OcrLine["bbox"];
+export type NormalizedRegion = OcrLine['bbox'];
 
 export interface OcrRetryOptions {
     /** Retry lines whose Tesseract confidence is below this value. */
@@ -113,6 +111,12 @@ export interface OcrRetryOptions {
     digitVerify?: boolean;
     /** Maximum digit-critical tokens to re-verify per image/chunk. */
     maxDigitFixes?: number;
+    /**
+     * Replace the first-pass line text when the retry reads it back with a
+     * strictly higher confidence (default true). The retry evidence block is
+     * still emitted alongside, so the change stays auditable.
+     */
+    replaceMain?: boolean;
 }
 
 export interface OcrRetry {
@@ -130,7 +134,7 @@ export interface DigitFix {
     replacement: string;
     oldConfidence: number;
     newConfidence: number;
-    bbox: OcrLine["bbox"];
+    bbox: OcrLine['bbox'];
     lineIndex: number;
 }
 
@@ -166,7 +170,7 @@ export function shouldAcceptDigitFix(
     return newConfidence >= oldConfidence + 5;
 }
 
-const TOKEN_PUNCTUATION = new Set([".", "-", ":", "/", ";", ","]);
+const TOKEN_PUNCTUATION = new Set(['.', '-', ':', '/', ';', ',']);
 
 /**
  * Fuse a same-length re-read with the original token: punctuation positions
@@ -177,7 +181,7 @@ const TOKEN_PUNCTUATION = new Set([".", "-", ":", "/", ";", ","]);
  */
 export function fuseDigitReread(oldText: string, newText: string): string {
     if (oldText.length !== newText.length) return newText;
-    let fused = "";
+    let fused = '';
     for (let i = 0; i < oldText.length; i += 1) {
         const prev = oldText[i];
         const next = newText[i];
@@ -197,12 +201,19 @@ export function fuseDigitReread(oldText: string, newText: string): string {
  *
  * @param imageBytes raw image bytes (PNG/JPEG/WebP/GIF).
  * @param langs tessdata langs to load (default `chi_sim+eng`).
+ * @param psm page segmentation mode override (default PSM.AUTO).
  */
 export async function runOcr(
     imageBytes: Buffer,
-    langs: string = DEFAULT_LANGS.join("+"),
+    langs: string = DEFAULT_LANGS.join('+'),
+    psm?: PSM,
 ): Promise<OcrResult> {
     const worker = await getWorker(langs);
+    // Always set explicitly so a previous retry's PSM cannot leak into the
+    // next full-page pass. The value must be a NUMBER: tesseract.js's PSM
+    // enum holds strings ("3"), and passing the string "3" breaks full-page
+    // detection (measured: 11 lines → 3 lines), while Number(3) is fine.
+    await worker.setParameters({ tessedit_pageseg_mode: Number(psm ?? PSM.AUTO) });
     const { data } = await worker.recognize(imageBytes);
 
     const meta = await sharp(imageBytes).metadata();
@@ -210,15 +221,16 @@ export async function runOcr(
     const height = meta.height || 1;
 
     const lines: OcrLine[] = (data.blocks ?? [])
+        .filter(isTextBlock)
         .flatMap((block) => block.paragraphs ?? [])
         .flatMap((para) => para.lines ?? [])
-        .filter((line) => (line.text ?? "").trim().length > 0)
+        .filter((line) => (line.text ?? '').trim().length > 0)
         .map((line) => {
             const bbox = line.bbox;
             const words: OcrWord[] = (line.words ?? [])
-                .filter((word) => (word.text ?? "").trim().length > 0)
+                .filter((word) => (word.text ?? '').trim().length > 0)
                 .map((word) => ({
-                    text: (word.text ?? "").trim(),
+                    text: (word.text ?? '').trim(),
                     bbox: {
                         x1: word.bbox.x0 / width,
                         y1: word.bbox.y0 / height,
@@ -228,7 +240,7 @@ export async function runOcr(
                     confidence: word.confidence ?? 0,
                 }));
             return {
-                text: (line.text ?? "").trim(),
+                text: (line.text ?? '').trim(),
                 bbox: {
                     x1: bbox.x0 / width,
                     y1: bbox.y0 / height,
@@ -243,13 +255,14 @@ export async function runOcr(
     return {
         langs,
         lines,
-        fullText: (data.text ?? "").trim(),
+        fullText: (data.text ?? '').trim(),
     };
 }
 
 /**
  * Format OCR result as the block we inject into the prompt. Mirrors the
  * screenshot OCR evidence so users can compare the result visually.
+ * Line text passes the CJK post-process (space merge + leading icon strip).
  */
 export function formatOcrBlock(result: OcrResult): string {
     if (result.lines.length === 0) {
@@ -260,26 +273,65 @@ export function formatOcrBlock(result: OcrResult): string {
             const { x1, y1, x2, y2 } = line.bbox;
             const cx = (x1 + x2) / 2;
             const cy = (y1 + y2) / 2;
-            const truncated = line.text.length > 80
-                ? line.text.slice(0, 77) + "…"
-                : line.text;
+            const cleaned = applyCjkPostprocess(line.text);
+            const truncated = cleaned.length > 80
+                ? cleaned.slice(0, 77) + '…'
+                : cleaned;
             return `  · "${truncated}"  x=${cx.toFixed(3)} y=${cy.toFixed(3)}`;
         })
-        .join("\n");
+        .join('\n');
     return `[OCR ${result.langs}] ${result.lines.length} 行\n${lines}`;
 }
 
 /**
  * 过滤低置信度行，返回这些行在原图中的归一化区域。
+ *
+ * 排序策略（2026-08-26）：文字行优先——含 CJK/字母的行排在最前（内部按
+ * 置信度升序），纯符号/图标噪声行（©/&/£/铭 等）排后。UI 截图里图标行是
+ * 低置信度主力，若不区分它们会抢光有限的重试名额（实测 3 个名额全被图标
+ * 行耗尽，真正认错的文字行反而没被重读）。
  */
 export function lowConfidenceRegions(
     result: OcrResult,
     threshold = 60,
-): NormalizedRegion[] {
+): Array<{ region: NormalizedRegion; lineIndex: number }> {
+    const TEXT_LIKE = /[\u4e00-\u9fff\p{L}]/u;
     return result.lines
-        .filter((l) => l.confidence < threshold)
-        .sort((a, b) => a.confidence - b.confidence)
-        .map((l) => l.bbox);
+        .map((line, lineIndex) => ({ line, lineIndex }))
+        .filter(({ line }) => line.confidence < threshold)
+        .sort((a, b) => {
+            const aText = TEXT_LIKE.test(a.line.text) ? 0 : 1;
+            const bText = TEXT_LIKE.test(b.line.text) ? 0 : 1;
+            if (aText !== bText) return aText - bText;
+            return a.line.confidence - b.line.confidence;
+        })
+        .map(({ line, lineIndex }) => ({ region: line.bbox, lineIndex }));
+}
+
+/** True when the line carries any CJK character. */
+function containsCjk(text: string): boolean {
+    return /[\u4e00-\u9fff]/.test(text);
+}
+
+/**
+ * CJK 行后处理：
+ * 1. 字间空格合并：`通 知` → `通知`（chi_sim 在低质量输入下的切分抖动）。
+ * 2. 行首符号剥离：含 CJK 的行去掉行首非字母/数字符号（UI 图标噪声
+ *    ©/&/£/= 等；英文/URL 行不受影响，行首字母/数字会阻止匹配）。
+ */
+export function applyCjkPostprocess(text: string): string {
+    let out = text.replace(/(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, '');
+    if (containsCjk(out)) {
+        out = out.replace(/^[^\p{L}\p{N}]+/u, '');
+    }
+    return out;
+}
+
+/** True when the OCR block looks like a text block (not image/separator). */
+function isTextBlock(block: { blocktype?: string }): boolean {
+    if (block.blocktype === undefined) return true;
+    const t = block.blocktype.toUpperCase();
+    return t === 'TEXT' || t === 'UNKNOWN' || t === 'FLOWING_TEXT' || t === 'HEADING_TEXT' || t === 'PULLOUT_TEXT' || t === 'EQUATION' || t === 'INLINE_EQUATION' || t === 'VERTICAL_TEXT' || t === 'CAPTION_TEXT' || t === 'FLOWING_IMAGE' || t === 'HEADING_IMAGE' || t === 'PULLOUT_IMAGE';
 }
 
 /**
@@ -325,8 +377,8 @@ async function verifyDigitTokens(
             .resize({
                 width: Math.max(1, Math.round(cropWidth * 3)),
                 height: Math.max(1, Math.round(cropHeight * 3)),
-                fit: "fill",
-                kernel: "lanczos3",
+                fit: 'fill',
+                kernel: 'lanczos3',
             })
             .extend({
                 top: 10,
@@ -338,7 +390,7 @@ async function verifyDigitTokens(
             .toBuffer();
 
         const { data } = await digitWorker.recognize(crop);
-        const reread = (data.text ?? "").replace(/\s+/g, "").trim();
+        const reread = (data.text ?? '').replace(/\s+/g, '').trim();
         const newText = fuseDigitReread(word.text, reread);
         const newConfidence = (data.blocks ?? [])
             .flatMap((block) => block.paragraphs ?? [])
@@ -353,6 +405,8 @@ async function verifyDigitTokens(
             ...line,
             text: line.text.replace(word.text, newText),
         };
+        // Keep fullText consistent with the corrected lines: apply the same
+        // first-occurrence replacement to the raw tesseract text.
         initial.fullText = initial.fullText.replace(word.text, newText);
         fixes.push({
             original: word.text,
@@ -368,21 +422,31 @@ async function verifyDigitTokens(
 
 /** Format the digit verification corrections as an evidence block. */
 export function formatDigitFixBlock(fixes: readonly DigitFix[]): string {
-    if (fixes.length === 0) return "";
+    if (fixes.length === 0) return '';
     const lines = fixes.map((fix) => {
         const y = (fix.bbox.y1 + fix.bbox.y2) / 2;
         const oldConf = Math.round(fix.oldConfidence);
         const newConf = Math.round(fix.newConfidence);
         return `  · y=${y.toFixed(3)} "${fix.original}" → "${fix.replacement}"（置信度 ${oldConf}→${newConf}）`;
     });
-    return `[数字复核 ${fixes.length} 处]\n${lines.join("\n")}`;
+    return `[数字复核 ${fixes.length} 处]\n${lines.join('\n')}`;
 }
 
 /**
  * OCR once, then retry the worst lines from tight crops. The crop is padded,
- * enlarged with Lanczos, and sent through the same worker again. This keeps
- * the first pass as complete evidence while adding a higher-resolution local
- * reading for small or blurry text instead of silently replacing it.
+ * enlarged with Lanczos, and sent through the same worker again with a single
+ * text-block page segmentation. This keeps the first pass as complete evidence
+ * while adding a higher-resolution local reading for small or blurry text.
+ *
+ * 2026-08-26 changes (per tesseract ImproveQuality + community practice):
+ * - `upscale` default 2 → 3 (small CJK UI glyphs need ≥ ~35–40px height).
+ * - Retry crops use PSM.SINGLE_BLOCK: tesseract's default full-page layout
+ *   analysis mis-segments tiny single-line regions.
+ * - `replaceMain` (default true): when the retry reads a line back with a
+ *   strictly higher confidence, the first-pass line text is replaced in place
+ *   (the retry evidence block is still emitted for audit).
+ * - `lowConfidenceRegions` now ranks text-like lines (CJK/letters) before
+ *   pure-icon noise lines, so UI icons no longer exhaust the retry budget.
  *
  * `focusY` is an optional hint from pixel_scan (normally red horizontal rows):
  * a matching row makes the crop slightly taller so anti-aliased separators or
@@ -390,17 +454,18 @@ export function formatDigitFixBlock(fixes: readonly DigitFix[]): string {
  */
 export async function ocrWithLowConfidenceRetry(
     imageBytes: Buffer,
-    langs: string = DEFAULT_LANGS.join("+"),
+    langs: string = DEFAULT_LANGS.join('+'),
     options: OcrRetryOptions = {},
 ): Promise<OcrRetryResult> {
     const threshold = options.threshold ?? 60;
     const maxRegions = Math.max(0, Math.floor(options.maxRegions ?? 3));
-    const upscale = Math.max(1, options.upscale ?? 2);
+    const upscale = Math.max(1, options.upscale ?? 3);
     const padding = Math.max(0, Math.floor(options.padding ?? 16));
     const focusY = options.focusY ?? [];
     const focusX = options.focusX ?? [];
     const digitVerify = options.digitVerify ?? true;
     const maxDigitFixes = Math.max(0, Math.floor(options.maxDigitFixes ?? 6));
+    const replaceMain = options.replaceMain ?? true;
     const initial = await runOcr(imageBytes, langs);
 
     const digitFixes = digitVerify
@@ -415,13 +480,15 @@ export async function ocrWithLowConfidenceRetry(
     const height = meta.height ?? 1;
     const retries: OcrRetry[] = [];
 
-    for (const region of regions) {
+    for (const { region, lineIndex } of regions) {
         const pixelFocus = focusY.some((y) =>
             y >= region.y1 - 0.04 && y <= region.y2 + 0.04,
         );
         const pixelFocusX = focusX.some((x) =>
             x >= region.x1 - 0.04 && x <= region.x2 + 0.04,
         );
+        // Focus hits enlarge the crop on the matching axis so separators or
+        // vertical band boundaries are not clipped during the retry read.
         const padY = pixelFocus ? Math.max(padding, 24) : padding;
         const padX = pixelFocusX ? Math.max(padding, 24) : padding;
         const left = Math.max(0, Math.floor(region.x1 * width) - padX);
@@ -436,8 +503,8 @@ export async function ocrWithLowConfidenceRetry(
             .resize({
                 width: Math.max(1, Math.round(cropWidth * upscale)),
                 height: Math.max(1, Math.round(cropHeight * upscale)),
-                fit: "fill",
-                kernel: "lanczos3",
+                fit: 'fill',
+                kernel: 'lanczos3',
             })
             .extend({
                 top: 10,
@@ -447,8 +514,34 @@ export async function ocrWithLowConfidenceRetry(
                 background: { r: 255, g: 255, b: 255, alpha: 1 },
             })
             .toBuffer();
-        const result = await runOcr(crop, langs);
+        const result = await runOcr(crop, langs, PSM.SINGLE_BLOCK);
         retries.push({ region, pixelFocus, pixelFocusX, result });
+
+        // Replace the first-pass line when the retry reads it back better.
+        if (replaceMain && lineIndex !== undefined) {
+            const original = initial.lines[lineIndex];
+            if (original !== undefined) {
+                const rereadConfidence = Math.max(
+                    0,
+                    ...result.lines.map((line) => line.confidence),
+                );
+                const rereadText = result.lines
+                    .map((line) => line.text)
+                    .join(' ')
+                    .trim();
+                if (
+                    rereadText.length > 0
+                    && rereadConfidence > original.confidence + 5
+                ) {
+                    initial.lines[lineIndex] = {
+                        ...original,
+                        text: rereadText,
+                        confidence: rereadConfidence,
+                    };
+                    initial.fullText = initial.fullText.replace(original.text, rereadText);
+                }
+            }
+        }
     }
 
     return { initial, retries, digitFixes };
@@ -456,19 +549,25 @@ export async function ocrWithLowConfidenceRetry(
 
 /** Format only the extra readings produced by low-confidence retries. */
 export function formatOcrRetryBlock(result: OcrRetryResult): string {
-    if (result.retries.length === 0) return "";
+    if (result.retries.length === 0) return '';
     const lines = result.retries.map((retry, index) => {
         const { x1, y1, x2, y2 } = retry.region;
         const focus = [
-            retry.pixelFocus ? "行" : null,
-            retry.pixelFocusX ? "列" : null,
-        ].filter(Boolean).join("·");
-        const focusNote = focus.length > 0 ? `，命中像素扫描${focus}焦点` : "";
-        const text = retry.result.fullText.trim() || "未识别到文字";
+            retry.pixelFocus ? '行' : null,
+            retry.pixelFocusX ? '列' : null,
+        ].filter(Boolean).join('·');
+        const focusNote = focus.length > 0 ? `，命中像素扫描${focus}焦点` : '';
+        const raw = retry.result.fullText.trim() || '未识别到文字';
+        const text = raw
+            .split('\n')
+            .map((line) => applyCjkPostprocess(line.trim()))
+            .filter(Boolean)
+            .join(' ')
+            .slice(0, 120);
         return `  · 区域 ${index + 1} x=${x1.toFixed(3)}-${x2.toFixed(3)} `
             + `y=${y1.toFixed(3)}-${y2.toFixed(3)}${focusNote}：${text}`;
     });
-    return `[OCR 低置信度重试 ${result.retries.length} 区域]\n${lines.join("\n")}`;
+    return `[OCR 低置信度重试 ${result.retries.length} 区域]\n${lines.join('\n')}`;
 }
 
 /**

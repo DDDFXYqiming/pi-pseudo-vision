@@ -8,19 +8,17 @@
  *
  * 注意：颜色统计 / 像素扫描 / 元信息仍然基于【原图】字节（颜色分析需要真实
  * 像素），只有 OCR 走预处理后的字节——见 bridge.ts。
- *
- * Ported from dsh-pseudo-vision by the same author.
  */
 
-import sharp from "sharp";
-import { computeColorStats, type ColorStats } from "./color-stats.ts";
+import sharp from 'sharp';
+import { computeColorStats, type ColorStats } from './color-stats.ts';
 
 /** 分辨率预算：像素总数上限（与 vision.py BUDGET_PIXELS 一致）。 */
 export const BUDGETS: Record<string, { maxPixels: number; label: string }> = {
-    small:  { maxPixels: 512 * 512,   label: "512² ≈ 26 万像素" },
-    normal: { maxPixels: 1024 * 1024, label: "1024² ≈ 105 万像素" },
-    large:  { maxPixels: 1448 * 1448, label: "1448² ≈ 210 万像素" },
-    mega:   { maxPixels: 4096 * 4096, label: "4096² ≈ 1678 万像素" },
+    small:  { maxPixels: 512 * 512,   label: '512² ≈ 26 万像素' },
+    normal: { maxPixels: 1024 * 1024, label: '1024² ≈ 105 万像素' },
+    large:  { maxPixels: 1448 * 1448, label: '1448² ≈ 210 万像素' },
+    mega:   { maxPixels: 4096 * 4096, label: '4096² ≈ 1678 万像素' },
 };
 
 const DEFAULT_MIN_PIXELS = 224 * 224;
@@ -111,13 +109,22 @@ export async function budgetResize(
     }
 
     const bytes = await sharp(imageBytes)
-        .resize(target.width, target.height, { fit: "fill", kernel: "lanczos3" })
+        .resize(target.width, target.height, { fit: 'fill', kernel: 'lanczos3' })
         .toBuffer();
     return { bytes, width: target.width, height: target.height, resized: true };
 }
 
 /**
- * OCR 增强：灰度 → （深色模式时）反色 → 对比度拉伸 → 轻锐化。
+ * OCR 增强：灰度 → （深色模式时）反色 → 对比度拉伸 → 轻降噪 → 轻锐化。
+ *
+ * 2026-08-26 调参依据（tesseract 官方 ImproveQuality + 社区实测）：
+ * - 过度处理有害：tesseract 内部自带 Otsu 二值化且使用梯度信息，
+ *   normalize()+sharpen(0.8) 对浅色 UI 截图会把抗锯齿边缘放大成噪点、
+ *   小字号 CJK 笔画粘连（"插"→"播" 类错误加剧）。
+ * - 顺序敏感：median 必须在 normalize 之后——先拉伸对比度（浅灰 #666
+ *   小字变深）再做 3×3 中值降噪，否则细笔画先被平滑抹平、整行漏检
+ *   （实测：median 前置导致缩放图上"通用设置/模型"行消失）。
+ * - 二值化交给 tesseract 内部 Otsu，不做外部二值化。
  */
 export async function enhanceForOcr(
     imageBytes: Buffer,
@@ -130,7 +137,8 @@ export async function enhanceForOcr(
     }
     return pipeline
         .normalize()
-        .sharpen({ sigma: 0.8 })
+        .median(3)
+        .sharpen({ sigma: 0.3 })
         .toBuffer();
 }
 
@@ -177,7 +185,7 @@ export async function adaptiveUpscale(
     const targetWidth = Math.max(1, Math.round(width * scale));
     const targetHeight = Math.max(1, Math.round(height * scale));
     const bytes = await sharp(imageBytes)
-        .resize(targetWidth, targetHeight, { kernel: "lanczos3" })
+        .resize(targetWidth, targetHeight, { kernel: 'lanczos3' })
         .toBuffer();
     return { bytes, scaled: true };
 }
@@ -192,9 +200,9 @@ export function isDarkModeFromStats(stats: ColorStats): boolean {
         const found = stats.buckets.find((b) => b.name === name);
         return found?.share ?? 0;
     };
-    const bright = share("white") + share("yellow") + share("cyan") + share("magenta");
-    const dark = share("black") + share("grey");
-    if (typeof stats.averageLuminance === "number") {
+    const bright = share('white') + share('yellow') + share('cyan') + share('magenta');
+    const dark = share('black') + share('grey');
+    if (typeof stats.averageLuminance === 'number') {
         return bright < 0.4 && stats.averageLuminance < 115;
     }
     return bright < 0.3 && dark > 0.6;
@@ -249,7 +257,7 @@ export async function preprocessForOcr(
         width: meta.width ?? 1,
         height: meta.height ?? 1,
         resized: resized.resized,
-        enhanced: true,
+        enhanced: true, // 增强管线总是执行（灰度/对比度/锐化/白边）
         upscaled: upscaled.scaled,
         budget,
     };
