@@ -22,7 +22,15 @@ A **Pi port** of the same author's [dsh-pseudo-vision](https://github.com/DDDFXY
 | `vision_meta` | Dimensions, format, colour space, 4-corner + centre samples | `sharp` metadata |
 | `pseudo_vision_convert` | Aggregates the four tools into a single `<pseudo-vision-context>` evidence block (same shape the auto-bridge uses) | `sharp` + `tesseract.js` |
 
-> Digit verification (v0.5.1 of the upstream algorithm): after the first OCR pass, IP / URL / port / long-number tokens are re-read using an ASCII whitelist + PSM 7 single-line mode; punctuation positions keep the first-pass skeleton (so `127-0.0.1` won't survive — it becomes `127.0.0.1`). Only same-length re-reads with confidence gain ≥5 are accepted; the `[数字复核 N 处]` block keeps a full audit trail.
+### OCR pipeline (v5, synced with dsh-pseudo-vision)
+
+1. **Preprocessing**: budget resize (small/normal/large/mega, 28-grid snap) → dark-mode detection (no inversion on light themes) → greyscale → contrast stretch → 3×3 median denoise → light sharpen (σ0.3) → white border
+2. **First pass**: full-page tesseract recognition with per-line confidence; non-text blocks (image/separator) filtered
+3. **Low-confidence retry**: up to 8 regions, **text-like lines ranked first** (icon noise lines no longer exhaust the budget); crop + 3× Lanczos upscale + single-block mode (PSM 6) re-read; **higher-confidence re-reads replace the main line** (evidence block still emitted)
+4. **CJK post-process**: inter-character space merge (`通 知` → `通知`), leading icon symbol strip
+5. **Digit verification**: IP/URL/port/long-number tokens re-read with an ASCII whitelist + single-line mode; punctuation keeps the first-pass skeleton, only same-length re-reads with confidence gain ≥5 are accepted; `[数字复核 N 处]` audit block
+
+> Verified on a real settings-page screenshot: OCR went from "3 top lines only, all menu text lost" to 11 lines with "通用设置/模型/通知" fully clean. Key fix: tesseract.js PSM must be passed as a Number (the string `"3"` breaks full-page detection).
 
 ## Install
 
