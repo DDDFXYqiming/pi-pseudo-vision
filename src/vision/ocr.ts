@@ -141,7 +141,7 @@ export interface OcrRetryResult {
 }
 
 /** IP v4 / URL / port / long-number tokens where digit errors hurt the most. */
-const DIGIT_CRITICAL_RE = /(\d{1,3}\.){3}\d{1,3}|https?:\/\/|:?\d{2,5}(?!\d)|\d{4,}/i;
+const DIGIT_CRITICAL_RE = /(\d{1,3}\.){3}\d{1,3}|https?:\/\/|:\d{2,5}(?!\d)|\d{4,}/i;
 
 /** True when the token carries digit-critical payload (IP, URL, port, number). */
 export function isDigitCriticalToken(text: string): boolean {
