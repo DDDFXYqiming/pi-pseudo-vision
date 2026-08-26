@@ -475,10 +475,12 @@ export default function (pi: ExtensionAPI) {
     // models. Native-vision models keep their real multimodal input and   //
     // don't see this extension's tools at all (the context hook was       //
     // already gated; registered tools were leaking).                      //
-    // ponytail: model_select only fires on change/restore, so initial      //
-    // state comes from pi.getModel() at startup.                          //
+    // The current Pi API exposes the active model on ExtensionContext,     //
+    // not on ExtensionAPI.                                                  //
     // ------------------------------------------------------------------ //
-    syncPseudoVisionTools(pi, pi.getModel());
+    pi.on("session_start", async (_event, ctx) => {
+        syncPseudoVisionTools(pi, ctx.model);
+    });
     pi.on("model_select", async (event) => {
         syncPseudoVisionTools(pi, event.model);
     });
