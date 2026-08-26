@@ -1,41 +1,63 @@
+简体中文 | [English](README.en.md)
+
 # pi-pseudo-vision
 
-> Local OCR + color-statistics + pixel-scan + metadata bridge for text-only **Pi Coding Agent** models. No external vision API.
+> 给 **Pi Coding Agent** 的 text-only provider 装上"工具层视觉"：把图片在 LLM dispatch 路径上自动拆解成 OCR 文字 + 颜色统计 + 像素扫描 + 元信息，让任意纯文本模型也能"看图"。全程本机执行，**无外部视觉 API**。
 
-A Pi Coding Agent extension that lets **any text-only model** "see" image attachments. When the active model declares `input: ["text"]` and a `UserMessage` carries an `ImageContent` block, this extension swaps that block for a structured **local** evidence block built from four vision tools (`vision_ocr` / `vision_color_stats` / `vision_pixel_scan` / `vision_meta`). The model then describes the image from the evidence — same as DeepSeek users do today with `dsh-pseudo-vision`, but on Pi.
+**Pi 适配版**。从同作者的 [dsh-pseudo-vision](https://github.com/DDDFXYqiming/dsh-pseudo-vision)（DeepSeek Harness 插件）移植，**保留全部 vision 算法**（颜色统计 / 元信息 / 像素扫描 / OCR + 数字复核通道 + 分块 OCR），入口改成 Pi 扩展规范。
 
-| Tool | Purpose | Implementation |
+## 它在做什么
+
+- 注册 4 个 `vision_*` 工具（OCR / 颜色统计 / 像素扫描 / 元信息）给 LLM 直接调用，并加一个 `pseudo_vision_convert` 工具做一键汇总
+- 注册 `/pseudo-vision` 命令：`on` / `off` / `status` / `<path>` 四种用法（手动转换本地图片）
+- 可选的 `context` 事件钩子：自动把 user message 里的 `ImageContent` 块替换为本地 vision observation 文本，仅当：
+  - `/pseudo-vision on` 已开启 **或** `bridgeProviders` 配置中包含当前 provider，**且**
+  - 当前 model 声明 `input: ["text"]`（**原生视觉模型完全不动**）
+
+## 提供的工具
+
+| 工具 | 作用 | 实现 |
 |---|---|---|
-| `vision_ocr` | Extract every text line (with normalized coordinates); includes a digit verification pass for IP / URL / port / long numbers | `tesseract.js` (chi_sim + eng) |
-| `vision_color_stats` | 9-bucket pixel share (white / black / grey / red / green / blue / yellow / cyan / magenta / other) + average luminance | `sharp` histogram |
-| `vision_pixel_scan` | Row + column multi-bucket scan; background buckets suppressed at `≥90%`, partial bands in `[0.15, 0.90)` still surfaced; up to 5 rows + 5 cols per bucket | `sharp` raw pixel access |
-| `vision_meta` | Dimensions, format, color space, 4-corner + center samples | `sharp` metadata |
+| `vision_ocr` | 提取图中所有文字（带归一化坐标），含数字复核通道（IP/URL/端口/长数字的 `0↔6/9/8` 字形重识别 + 标点保持融合） | tesseract.js（chi_sim + eng） |
+| `vision_color_stats` | 9 桶（白/黑/灰/红/绿/蓝/黄/青/品红/其他）像素占比 + 平均亮度 | sharp + 直方图 |
+| `vision_pixel_scan` | 行 + 列多色桶扫描；`mode=target` 找指定颜色（默认红 `#ff0000`），`mode=universal` 共享 512px 降采样输出全部非背景桶；每桶最多 5 行 + 5 列 | sharp raw pixel |
+| `vision_meta` | 尺寸、格式、色彩空间、四角/中心采样 | sharp metadata |
+| `pseudo_vision_convert` | 把 4 个工具串成单一 `<pseudo-vision-context>` 证据块（与 auto-bridge 路径同源） | sharp + tesseract.js |
 
-The four `vision_*` tools are registered with Pi's `registerTool()` so the LLM can call them on demand when it has a file path. A `pseudo_vision_convert` tool aggregates them and returns the same evidence block used by the auto-bridge. The `context` event hook automatically converts images for text-only models when an opt-in provider is active.
+> 数字复核通道：首遍 OCR 后用 ASCII 白名单 + PSM 7 单行模式对 IP/URL/端口/长数字重识别，标点位置保留首遍骨架（避免 `127-0.0.1` 这类破坏），同长度 + 置信提升 ≥5 才接受，证据块 `[数字复核 N 处]` 全程留痕。
 
-## Install
+## 安装
 
 ```bash
+# GitHub 安装（推荐）
 pi install git:github.com:DDDFXYqiming/pi-pseudo-vision
-# or, for local development:
-pi install <local absolute path>
+
+# Windows schannel / npm 拦截时改用本地路径
+git clone https://github.com/DDDFXYqiming/pi-pseudo-vision.git
+cd pi-pseudo-vision && npm install
+pi install <本机绝对路径>
 ```
 
-## Usage
+`npm install` 装上 `sharp` + `tesseract.js` 后扩展直接可用，**无需构建步骤**——pi 用 jiti 直接跑 TypeScript 源码。
 
-Out of the box, the four `vision_*` tools are available to the LLM. Auto-conversion is **off by default** (so native vision models stay native) — opt in per session:
+## 使用
+
+装上即生效，4 个 `vision_*` 工具和 `pseudo_vision_convert` 立即可被 LLM 调用。`/pseudo-vision` 命令切换会话级 auto-bridge：
 
 ```
-/pseudo-vision on
+/pseudo-vision              # 等同 status：打印当前状态
+/pseudo-vision on           # 当前会话开启 auto-bridge
+/pseudo-vision off          # 当前会话关闭 auto-bridge
+/pseudo-vision <path>       # 一次性：把本地图片转成 vision observation 注入为 follow-up 消息
 ```
 
-By default, auto-conversion only runs for the active provider's text-only models. To bridge additional providers explicitly, edit `settings.json`:
+**Auto-bridge 默认对所有 provider 关闭**——避免你吐槽的"原生视觉模型也被强制改走伪视觉"。要桥接某个 text-only provider 时，显式配 `bridgeProviders` 白名单：
 
 ```json
 {
-  "extensions": [...],
+  "extensions": ["..."],
   "pi-pseudo-vision": {
-    "bridgeProviders": ["kimi-for-coding", "openai-completions"],
+    "bridgeProviders": ["kimi-for-coding"],
     "ocrBudget": "auto",
     "ocrNoResize": false,
     "maxImages": 8,
@@ -45,11 +67,25 @@ By default, auto-conversion only runs for the active provider's text-only models
 }
 ```
 
-`auto` is the safe default; switch to `large`/`mega` for dense tables / small fonts, `small` to bound local CPU/memory. `ocrNoResize: true` skips budget resize but still runs grayscale / contrast / sharpen / white-border; color stats / pixel scan / meta always read the original image.
+或会话内一次性开启：`/pseudo-vision on`（仅对**当前会话**生效）。
 
-## Effect example
+## 配置
 
-A pure-text model (e.g. text-only `kimi-for-coding/kimi-k2-thinking`), with a PowerShell screenshot attached, receives this evidence:
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `bridgeProviders` | `[]` | 白名单 provider 列表（空 = 默认**不**自动桥接） |
+| `bypassCache` | `false` | `true` = 强制重算，跳过磁盘缓存 |
+| `maxImages` | `8` | 单请求最多转换张数 |
+| `langs` | `chi_sim+eng` | tesseract 语言包 |
+| `ocrBudget` | `auto` | `auto` / `small` / `normal` / `large` / `mega` |
+| `ocrNoResize` | `false` | `true` = 跳过 OCR 预算缩放/放大，但保留灰度/对比度/锐化/白边 |
+| `cacheDir` | `~/.pi/agent/cache/pi-pseudo-vision` | OCR 结果缓存目录 |
+
+`auto` 适合默认使用；密集表格 / 细小字体选 `large` / `mega`；想限制本地 CPU/内存选 `small`。`ocrNoResize: true` 跳过预算缩放但仍执行灰度/对比度/锐化/白边增强；颜色统计/像素扫描/元信息始终基于原图。
+
+## 效果示例
+
+`kimi-for-coding/kimi-k2-thinking`（纯文本）+ read_image 截图，模型收到的伪视觉证据：
 
 ```
 [pi-pseudo-vision] sha256=b290f3d7e212 budget=normal 原图:image/png 187415B 预处理:灰度+反色 1196×636 238744B
@@ -67,45 +103,28 @@ A pure-text model (e.g. text-only `kimi-for-coding/kimi-k2-thinking`), with a Po
   · [TL] #282c34 (深灰)  · [C] #282c34 (深灰)  · …
 ```
 
-The model synthesizes a full description from this structured evidence. The `[数字复核]` block records OCR misreads and corrections — every step fully auditable.
+模型基于以上结构化证据"脑补"出整图内容——`[数字复核]` 块记录了原 OCR 误读与纠正前后，证据完全可审计。
 
-## Architecture
+## 权限
 
-```
-UserMessage[ImageContent, …]
-        │
-        │  context event hook
-        ▼
-pi-pseudo-vision/imageToText() ────► [OCR + color-stats + pixel-scan + meta blocks]
-        │
-        ▼
-UserMessage[TextContent("<pseudo-vision-context>…"), …]
-        │
-        ▼
-text-only model reads evidence, describes image
-```
+- 读取 conversation history 里的图片附件（base64 解码到内存）
+- 写入缓存文件到 `~/.pi/agent/cache/pi-pseudo-vision/`（键含 sha256、budget、langs/resize 开关、OCR 管线参数版本、扫描版本）
+- 进程内 tesseract.js OCR + sharp（首次运行从 tesseract CDN 下载语言包，之后离线）
+- `context` 事件钩子在受控条件下改写 outgoing message context（非破坏性）
 
-The `ImageContent` block is never sent to the model. The text-only model only sees the synthesized text evidence.
+**不会**：上传图片到任何外部 API / 修改 Pi 核心代码 / 覆盖任何内置工具 / 改变原生视觉模型的路由。
 
-## Permissions
+## 已知边界
 
-- Reads image attachments from the conversation history (base64-decoded in-memory)
-- Writes a cache file per image to `~/.pi/agent/cache/pi-pseudo-vision/` (key: sha256 + budget + langs/no-resize + OCR pipeline version + scan version)
-- Spawns `tesseract.js` in-process; first run downloads language packs from the tesseract CDN, subsequent runs are fully offline
-- Modifies outgoing message context non-destructively via the `context` event hook (only when an opt-in provider is selected and the model is text-only)
+- 复杂空间关系 / 真实照片：描述精度有限，伪视觉证据 ≠ 真多模态理解
+- OCR 仍可能认错非数字 token；数字关键 token（IP/URL/端口/长数字）已由复核通道兜底
+- 颜色统计只给占比，无法还原布局/图标细节
+- 大图：OCR 按 `ocrBudget` 预算处理；超长截图（高 > 3000px）会先切块
+- 低置信度复核最多 3 个区域，提升小字可读性但不等同于图像超分辨率
+- **明确不做**：embedding / 外部 Vision API（违背"无模型"红线）/ 自动切换到伪视觉路径（必须显式开启，避免污染原生视觉模型）/ npm 发布（仍走 `pi install`）
 
-**Does NOT**: upload images to any external API / modify Pi core code / override any built-in tool / change native vision model behavior.
-
-## Known limits
-
-- Complex spatial relations / real photos: description precision is limited; pseudo-vision evidence ≠ real multimodal understanding
-- OCR may still misread text other than digit-critical tokens (the verification pass covers IP / URL / port / long numbers)
-- Color stats give shares only — no layout / icon reconstruction
-- Large images: OCR is processed within `ocrBudget`; tall screenshots (height > 3000px) are first chunked, color / pixel / meta still read from the original
-- Low-confidence retry covers at most 3 regions; it improves small-text readability but isn't image super-resolution
-
-**Explicitly NOT planned**: embeddings / external Vision API (violates the "no model" red line) / npm publish (still installed via `pi install`) / override native vision model routing (auto-bridge is opt-in, never by default).
+完整更新历史见 [CHANGELOG.md](./CHANGELOG.md)（待补）。关联项目：[dsh-pseudo-vision](https://github.com/DDDFXYqiming/dsh-pseudo-vision)（DeepSeek Harness 同源）；架构参考 [oil-oil/dsh-vision](https://github.com/oil-oil/dsh-vision)（外部 API 路线）。
 
 ## License
 
-MIT — derived from [`dsh-pseudo-vision`](https://github.com/DDDFXYqiming/dsh-pseudo-vision) for DeepSeek Harness by the same author. Vision algorithms (color stats / pixel scan / meta / OCR + digit verification + chunked OCR) are ported with minimal changes.
+MIT
