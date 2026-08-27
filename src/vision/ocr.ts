@@ -61,7 +61,7 @@ async function getDigitWorker(langs: string): Promise<Worker> {
     const worker = await createWorker(langs);
     await worker.setParameters({
         tessedit_char_whitelist: DIGIT_WHITELIST,
-        tessedit_pageseg_mode: PSM.SINGLE_LINE,
+        tessedit_pageseg_mode: Number(PSM.SINGLE_LINE) as unknown as PSM,
     });
     cachedDigitWorker = worker;
     cachedDigitLangs = langs;
