@@ -213,7 +213,7 @@ export async function runOcr(
     // next full-page pass. The value must be a NUMBER: tesseract.js's PSM
     // enum holds strings ("3"), and passing the string "3" breaks full-page
     // detection (measured: 11 lines → 3 lines), while Number(3) is fine.
-    await worker.setParameters({ tessedit_pageseg_mode: Number(psm ?? PSM.AUTO) });
+    await worker.setParameters({ tessedit_pageseg_mode: Number(psm ?? PSM.AUTO) as unknown as PSM });
     const { data } = await worker.recognize(imageBytes);
 
     const meta = await sharp(imageBytes).metadata();
