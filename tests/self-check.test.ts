@@ -207,3 +207,47 @@ test("imageToText emits a structured pseudo-vision evidence block", async () => 
         "OCR block should either render lines or 'no text detected'",
     );
 });
+
+// ----- 5. Conditional median: clean image skips denoise, noisy image keeps it -----
+test("estimateSaltPepperRate separates clean from salt-pepper images", async () => {
+    const sharp = (await import("sharp")).default;
+    const { estimateSaltPepperRate } = await import("../src/vision/preprocess.ts");
+
+    // Clean synthetic UI-ish image: flat white with a dark text bar.
+    const clean = await sharp({
+        create: { width: 320, height: 120, channels: 3, background: { r: 250, g: 250, b: 250 } },
+    })
+        .composite([{
+            input: await sharp({
+                create: { width: 320, height: 24, channels: 3, background: { r: 30, g: 30, b: 30 } },
+            }).png().toBuffer(),
+            left: 0,
+            top: 48,
+        }])
+        .png()
+        .toBuffer();
+
+    const cleanRate = await estimateSaltPepperRate(clean);
+    assert.ok(cleanRate < 3e-4, `clean image salt-pepper rate should be ~0, got ${cleanRate}`);
+
+    // Same image with injected salt-pepper noise (0.5% of pixels).
+    const { data, info } = await sharp(clean).greyscale().raw().toBuffer({ resolveWithObject: true });
+    const noisy = Buffer.from(data);
+    let seed = 7; // deterministic
+    const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    let flipped = 0;
+    for (let i = 0; i < noisy.length; i += 1) {
+        const r = rnd();
+        if (r < 0.0025) { noisy[i] = 240 + ((noisy[i] >> 4) & 1) * 15; flipped += 1; }
+        else if (r < 0.005) { noisy[i] = 15; flipped += 1; }
+    }
+    assert.ok(flipped > 0, "noise injection should flip some pixels");
+    const noisyBuf = await sharp(noisy, {
+        raw: { width: info.width, height: info.height, channels: 1 },
+    }).png().toBuffer();
+    const noisyRate = await estimateSaltPepperRate(noisyBuf);
+    assert.ok(
+        noisyRate >= 5e-4,
+        `noisy image salt-pepper rate should exceed denoise threshold, got ${noisyRate}`,
+    );
+});

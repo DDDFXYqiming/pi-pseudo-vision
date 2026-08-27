@@ -67,7 +67,7 @@ const AUTO_LARGE_THRESHOLD = 2_100_000;
  * corrects OCR line text, so pre-digit-pass cache entries are stale.
  */
 export const OCR_CACHE_PIPELINE =
-    "ocr-v5-min224-factor28-up800-border10-dark-enhance-chunk3000-2000-100-retry60-8x3-cjkfix-replacemain-textfirst-psm6num-scan-rowcol-v1-digitverify-v1";
+    "ocr-v5-min224-factor28-up800-border10-dark-condmedian-enhance-chunk3000-2000-100-retry60-8x3-cjkfix-replacemain-textfirst-psm6num-scan-rowcol-v1-digitverify-v1";
 
 export interface ResolvedImage {
     /** sha256 of the image bytes (truncated 12 chars in blocks). */
