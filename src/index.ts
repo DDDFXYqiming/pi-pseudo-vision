@@ -30,11 +30,11 @@ type MsgLike = {
     [key: string]: unknown;
 };
 
-import { readFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { readImageFileSafe } from "./vision/file-guard.ts";
 import { imageToText, sha256Of } from "./bridge.ts";
 import { disposeOcr } from "./vision/ocr.ts";
 import { computeColorStats, formatColorStatsBlock } from "./vision/color-stats.ts";
@@ -179,7 +179,7 @@ export default function (pi: ExtensionAPI) {
             file_path: Type.String({ description: "PNG/JPEG/WebP/GIF path on disk." }),
         }),
         async execute(_id, params) {
-            const bytes = await readFile(params.file_path);
+            const bytes = await readImageFileSafe(params.file_path);
             const stats = await computeColorStats(bytes);
             return {
                 content: [{ type: "text", text: formatColorStatsBlock(stats) }],
@@ -201,7 +201,7 @@ export default function (pi: ExtensionAPI) {
             file_path: Type.String({ description: "PNG/JPEG/WebP/GIF path on disk." }),
         }),
         async execute(_id, params) {
-            const bytes = await readFile(params.file_path);
+            const bytes = await readImageFileSafe(params.file_path);
             const result = await readMeta(bytes);
             return {
                 content: [{ type: "text", text: formatMetaBlock(result) }],
@@ -226,7 +226,7 @@ export default function (pi: ExtensionAPI) {
             threshold: Type.Optional(Type.Number({ description: "Minimum row/column density 0..1 (default 0.05 for target, 0.15 for universal)." })),
         }),
         async execute(_id, params) {
-            const bytes = await readFile(params.file_path);
+            const bytes = await readImageFileSafe(params.file_path);
             const mode = params.mode ?? "target";
             if (mode === "universal") {
                 // Reuse the colour-stats decode so we see the same pixels.
@@ -289,7 +289,7 @@ export default function (pi: ExtensionAPI) {
         }),
         async execute(_id, params) {
             const langs = params.langs ?? config.langs ?? "chi_sim+eng";
-            const bytes = await readFile(params.file_path);
+            const bytes = await readImageFileSafe(params.file_path);
             const sharp = (await import("sharp")).default;
             const { preprocessForOcr } = await import("./vision/preprocess.ts");
             const { ocrWithLowConfidenceRetry, formatOcrBlock, formatOcrRetryBlock, formatDigitFixBlock } = await import("./vision/ocr.ts");
@@ -330,7 +330,7 @@ export default function (pi: ExtensionAPI) {
             file_path: Type.String({ description: "PNG/JPEG/WebP/GIF path on disk." }),
         }),
         async execute(_id, params) {
-            const bytes = await readFile(params.file_path);
+            const bytes = await readImageFileSafe(params.file_path);
             const sha256 = sha256Of(bytes);
             const text = await imageToText(
                 { sha256, bytes, mimeType: "image/png" },
@@ -386,7 +386,7 @@ export default function (pi: ExtensionAPI) {
                 ctx.ui.notify(`pseudo-vision: file not found: ${path}`, "error");
                 return;
             }
-            const bytes = await readFile(path);
+            const bytes = await readImageFileSafe(path);
             const sha256 = sha256Of(bytes);
             const text = await imageToText(
                 { sha256, bytes, mimeType: "image/png" },
