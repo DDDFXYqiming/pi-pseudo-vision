@@ -15,14 +15,14 @@
     "multimodal"
   ],
   "engines": {
-    "node": ">=20.0"
+    "node": ">=20.9.0"
   },
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "sharp": "0.33.5",
+    "sharp": "0.35.4",
     "tesseract.js": "5.1.1"
   },
   "devDependencies": {
