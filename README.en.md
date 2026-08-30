@@ -36,7 +36,7 @@ A **Pi port** of the same author's [dsh-pseudo-vision](https://github.com/DDDFXY
 
 ```bash
 # GitHub (recommended)
-pi install git:github.com:DDDFXYqiming/pi-pseudo-vision
+pi install git:github.com/DDDFXYqiming/pi-pseudo-vision
 
 # Local path when schannel / npm blockers hit on Windows
 git clone https://github.com/DDDFXYqiming/pi-pseudo-vision.git

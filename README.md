@@ -38,7 +38,7 @@
 
 ```bash
 # GitHub 安装（推荐）
-pi install git:github.com:DDDFXYqiming/pi-pseudo-vision
+pi install git:github.com/DDDFXYqiming/pi-pseudo-vision
 
 # Windows schannel / npm 拦截时改用本地路径
 git clone https://github.com/DDDFXYqiming/pi-pseudo-vision.git
