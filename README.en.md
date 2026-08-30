@@ -2,15 +2,17 @@
 
 # pi-pseudo-vision
 
-> Adds "tool-layer vision" to text-only providers in **Pi Coding Agent**: image attachments are converted to OCR text + color statistics + pixel scan + metadata on the LLM dispatch path, so any text-only model can "see" the image. Everything runs locally, **no external vision API**.
+> Adds "tool-layer vision" to text-only providers in **Pi Coding Agent**. Image attachments are converted to OCR text + color statistics + pixel scan + metadata on the LLM dispatch path, so any text-only model can "see" the image. Everything runs locally, **no external vision API**.
 
-A **Pi port** of the same author's [dsh-pseudo-vision](https://github.com/DDDFXYqiming/dsh-pseudo-vision) (DeepSeek Harness plugin). All vision algorithms are preserved verbatim — color stats, meta, pixel scan, OCR + digit verification, chunked long-shot OCR — only the host integration is rewritten against Pi's extension API.
+A **Pi port** of the same author's [dsh-pseudo-vision](https://github.com/DDDFXYqiming/dsh-pseudo-vision) (DeepSeek Harness plugin). All vision algorithms are preserved verbatim (color stats, meta, pixel scan, OCR + digit verification, chunked long-shot OCR); only the host integration is rewritten against Pi's extension API.
 
 ## What it does
 
+The extension ships three things.
+
 - Registers four `vision_*` tools (OCR / color stats / pixel scan / meta) for direct LLM use, plus a `pseudo_vision_convert` tool that aggregates them into one evidence block.
-- Registers a `/pseudo-vision` command with four uses: `on` / `off` / `status` / `<path>` (one-shot convert of a local file).
-- Opt-in auto-bridge via the `context` event: when `/pseudo-vision on` has been issued this session OR the active provider is in `bridgeProviders`, AND the active model declares `input: ["text"]`, every `ImageContent` block is swapped for a `<pseudo-vision-context>` text block. **Native-vision models are never touched.**
+- Registers a `/pseudo-vision` command supporting `on` / `off` / `status` / `<path>` (one-shot convert of a local file).
+- Provides an optional `context` event hook that swaps every `ImageContent` block in user messages for a `<pseudo-vision-context>` text block. It only acts when two conditions hold at once. `/pseudo-vision on` has been issued this session **or** the active provider is in `bridgeProviders`; and the active model declares `input: ["text"]`. **Native-vision models are never touched.**
 
 ## Tools exposed
 
@@ -24,13 +26,13 @@ A **Pi port** of the same author's [dsh-pseudo-vision](https://github.com/DDDFXY
 
 ### OCR pipeline (v5, synced with dsh-pseudo-vision)
 
-1. **Preprocessing**: budget resize (small/normal/large/mega, 28-grid snap) → dark-mode detection (no inversion on light themes) → greyscale → contrast stretch → salt-pepper detection (3×3 median denoise only when noise is present; clean images skip it so 1px thin strokes aren't erased) → light sharpen (σ0.3) → white border
-2. **First pass**: full-page tesseract recognition with per-line confidence; non-text blocks (image/separator) filtered
-3. **Low-confidence retry**: up to 8 regions, **text-like lines ranked first** (icon noise lines no longer exhaust the budget); crop + 3× Lanczos upscale + single-block mode (PSM 6) re-read; **higher-confidence re-reads replace the main line** (evidence block still emitted)
-4. **CJK post-process**: inter-character space merge (`通 知` → `通知`), leading icon symbol strip
-5. **Digit verification**: IP/URL/port/long-number tokens re-read with an ASCII whitelist + single-line mode; punctuation keeps the first-pass skeleton, only same-length re-reads with confidence gain ≥5 are accepted; `[数字复核 N 处]` audit block
+1. **Preprocessing**. Budget resize (small/normal/large/mega, 28-grid snap) → dark-mode detection (no inversion on light themes) → greyscale → contrast stretch → salt-pepper detection (3×3 median denoise only when noise is present; clean images skip it so 1px thin strokes aren't erased) → light sharpen (σ0.3) → white border
+2. **First pass**. Full-page tesseract recognition with per-line confidence; non-text blocks (image/separator) filtered
+3. **Low-confidence retry**. Up to 8 regions, **text-like lines ranked first** (icon noise lines no longer exhaust the budget). Each region is cropped, upscaled 3× with Lanczos and re-read in single-block mode (PSM 6). A higher-confidence re-read replaces the main line (the evidence block is still emitted)
+4. **CJK post-process**. Inter-character space merge (`通 知` → `通知`), leading icon symbol strip
+5. **Digit verification**. IP/URL/port/long-number tokens re-read with an ASCII whitelist + single-line mode; punctuation keeps the first-pass skeleton, only same-length re-reads with confidence gain ≥5 are accepted; `[数字复核 N 处]` audit block
 
-> Verified on a real settings-page screenshot: OCR went from "3 top lines only, all menu text lost" to 11 lines with "通用设置/模型/通知" fully clean. Key fix: tesseract.js PSM must be passed as a Number (the string `"3"` breaks full-page detection).
+> Verified on a real settings-page screenshot. OCR used to return only the top 3 lines and lost all menu text; after the fix it returns 11 lines, with "通用设置/模型/通知" fully clean. The key fix was passing the tesseract.js PSM as a Number (the string `"3"` breaks full-page detection).
 
 ## Install
 
@@ -44,11 +46,11 @@ cd pi-pseudo-vision && npm install
 pi install <local absolute path>
 ```
 
-`npm install` pulls `sharp` + `tesseract.js`; no build step is needed — Pi loads TypeScript source directly through jiti.
+`npm install` pulls `sharp` + `tesseract.js`; no build step is needed. Pi loads TypeScript source directly through jiti.
 
 ## Usage
 
-The four `vision_*` tools and `pseudo_vision_convert` are available to the LLM as soon as the extension loads. The `/pseudo-vision` command toggles per-session auto-bridging:
+The four `vision_*` tools and `pseudo_vision_convert` are available to the LLM as soon as the extension loads. The `/pseudo-vision` command toggles per-session auto-bridging.
 
 ```
 /pseudo-vision              # equivalent to "status": print current state
@@ -57,7 +59,7 @@ The four `vision_*` tools and `pseudo_vision_convert` are available to the LLM a
 /pseudo-vision <path>       # one-shot: convert a local image and inject as follow-up
 ```
 
-**Auto-bridge is off for every provider by default** — so the long-standing irritation of "native vision models silently getting demoted to pseudo-vision" never happens. To bridge a specific text-only provider, opt in explicitly via `bridgeProviders`:
+**Auto-bridge is off for every provider by default**, so the long-standing irritation of "native vision models silently getting demoted to pseudo-vision" never happens. To bridge a specific text-only provider, opt in explicitly via `bridgeProviders`.
 
 ```json
 {
@@ -73,7 +75,7 @@ The four `vision_*` tools and `pseudo_vision_convert` are available to the LLM a
 }
 ```
 
-Or for a single session: `/pseudo-vision on`.
+Or enable it for a single session with `/pseudo-vision on`.
 
 ## Configuration
 
@@ -91,7 +93,7 @@ Or for a single session: `/pseudo-vision on`.
 
 ## Effect example
 
-A pure-text `kimi-for-coding/kimi-k2-thinking` model, with a PowerShell screenshot attached, receives this evidence:
+A pure-text `kimi-for-coding/kimi-k2-thinking` model, with a PowerShell screenshot attached, receives this evidence.
 
 ```
 [pi-pseudo-vision] sha256=b290f3d7e212 budget=normal 原图:image/png 187415B 预处理:灰度+反色 1196×636 238744B
@@ -109,27 +111,27 @@ A pure-text `kimi-for-coding/kimi-k2-thinking` model, with a PowerShell screensh
   · [TL] #282c34 (深灰)  · [C] #282c34 (深灰)  · …
 ```
 
-The model synthesises a full description purely from this structured evidence — the `[数字复核]` block records OCR misreads and corrections, every step fully auditable.
+The model synthesises a full description purely from this structured evidence. The `[数字复核]` block records OCR misreads and corrections, so every step is fully auditable.
 
 ## Permissions
 
 - Reads image attachments from the conversation history (base64-decoded in-memory)
-- Writes cache files to `~/.pi/agent/cache/pi-pseudo-vision/` (key: sha256 + budget + langs/no-resize flags + OCR pipeline version + scan version)
+- Writes cache files to `~/.pi/agent/cache/pi-pseudo-vision/` (the cache key combines sha256 + budget + langs/no-resize flags + OCR pipeline version + scan version)
 - In-process `tesseract.js` OCR + `sharp` (first run downloads language pack from the tesseract CDN, then offline)
 - Modifies outgoing message context non-destructively via the `context` event hook (only when an opt-in provider is selected AND the model is text-only)
 
-**Does NOT**: upload images to any external API / modify Pi core / override any built-in tool / change native-vision model routing.
+It never uploads images to any external API. Pi core, built-in tools and native-vision model routing are left untouched.
 
 ## Known limits
 
-- Complex spatial relations / real photos: description precision is limited; pseudo-vision evidence ≠ real multimodal understanding
+- Complex spatial relations and real photos get limited description precision; pseudo-vision evidence ≠ real multimodal understanding
 - OCR may still misread text other than digit-critical tokens (the verification pass covers IP / URL / port / long numbers)
-- Colour stats give shares only — no layout / icon reconstruction
-- Large images: OCR is processed within `ocrBudget`; tall screenshots (height > 3000px) are first chunked, colour / pixel / meta still read from the original
+- Colour stats give shares only; layout and icon details cannot be reconstructed
+- For large images, OCR is processed within `ocrBudget`; tall screenshots (height > 3000px) are first chunked, colour / pixel / meta still read from the original
 - Low-confidence retry covers at most 3 regions; it improves small-text readability but is not image super-resolution
-- **Explicitly NOT planned**: embeddings / external Vision API (violates the "no model" red line) / auto-route to pseudo-vision (must be picked explicitly, never by default) / npm publish (still installed via `pi install`)
+- Explicitly not planned are embeddings and external Vision APIs (they violate the "no model" red line), auto-routing to pseudo-vision (it must be picked explicitly, never by default), and npm publishing (installation stays via `pi install`)
 
-Full version history in [CHANGELOG.md](./CHANGELOG.md) (TBD). Related: [dsh-pseudo-vision](https://github.com/DDDFXYqiming/dsh-pseudo-vision) (same upstream, DeepSeek Harness); architectural inspiration [oil-oil/dsh-vision](https://github.com/oil-oil/dsh-vision) (external-API route).
+Full version history in [CHANGELOG.md](./CHANGELOG.md) (TBD). The related project is [dsh-pseudo-vision](https://github.com/DDDFXYqiming/dsh-pseudo-vision) (same upstream, DeepSeek Harness). The architecture took inspiration from [oil-oil/dsh-vision](https://github.com/oil-oil/dsh-vision) (external-API route).
 
 ## License
 
