@@ -135,6 +135,20 @@ export function imageKey(payload: ImagePayload): string {
 }
 
 /**
+ * Pi's built-in `read` prefixes image results with "Current model does not
+ * support images. The image will be omitted from this request." Once the
+ * bridge has converted the image, that claim contradicts the placeholder and
+ * invites text-only models to re-read the same file (observed in real
+ * sessions: two 738KB copies + a retry loop). Rewrite it to match reality.
+ */
+function rewriteOmittedNotice(text: string): string {
+    return text.replace(
+        /\[Current model does not support images\.[^\]]*\]/g,
+        "[Image content was handled by pi-pseudo-vision; see the placeholder below and the pseudo-vision context.]",
+    );
+}
+
+/**
  * Replace every image block in user/toolResult messages with a per-key
  * placeholder produced by the caller (full / compact / skipped tiers).
  */
@@ -146,7 +160,12 @@ export function replaceImagesInMessages(
         if (message.role !== "user" && message.role !== "toolResult") return message;
         const content = message.content;
         if (typeof content === "string") return message;
+        const hasImage = content.some((block: ImageLikeBlock) => block.type === "image");
         const nextBlocks = content.map((block: ImageLikeBlock): unknown => {
+            if (block.type === "text") {
+                if (!hasImage || !block.text) return block;
+                return { ...block, text: rewriteOmittedNotice(block.text) };
+            }
             if (block.type !== "image") return block;
             const bytes = Buffer.from(block.data ?? "", "base64");
             const key = imageKey({ bytes, mimeType: block.mimeType ?? "image/png" });

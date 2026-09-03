@@ -57,6 +57,29 @@ function seedCache(cacheDir: string, b64: string, text: string): void {
     writeFileSync(join(cacheDir, buildVisionCacheKey(digestOf(b64), "normal")), JSON.stringify({ text }));
 }
 
+test("the read-tool omitted-notice is rewritten once the bridge handles the image", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pv-ab-notice-"));
+    try {
+        const a = await makeImage(1, 1, { r: 255, g: 0, b: 0 });
+        seedCache(dir, a, "cached evidence A");
+        const toolResult = {
+            role: "toolResult",
+            content: [
+                { type: "text", text: "Read image file [image/png]\n[Current model does not support images. The image will be omitted from this request.]" },
+                { type: "image", data: a, mimeType: "image/png" },
+            ],
+        } as unknown as AgentMessageLike;
+        const result = await buildAutoBridgeContext([userMsg("看图", []), toolResult], opts(dir));
+        assert.ok(result);
+        const wire = JSON.stringify(result.messages);
+        assert.ok(!wire.includes("will be omitted"), "contradictory notice must be rewritten");
+        assert.match(wire, /handled by pi-pseudo-vision/);
+        assert.match(result.observation, /cached evidence A/);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test("no images returns null (hook stays out of the way)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pv-ab-null-"));
     try {
