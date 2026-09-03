@@ -77,13 +77,17 @@ pi install <本机绝对路径>
 
 也可以在会话内一次性开启，`/pseudo-vision on` 只对**当前会话**生效。
 
+**证据按轮次分层，超限不炸请求**：最近 `fullEvidenceTurns` 个用户轮的图片走全量管线（OCR+颜色+扫描+元信息）；更早轮次自动降级为紧凑证据（不跑 OCR，附完整缓存文件的 `read` 回读指针）；超出 `maxImages` 或总字符预算的图片保留显式占位符，上下文末尾附 `[⚠️ 图片处理摘要]` 告知模型哪些图未生效。历史图在新消息里重新出现会自动恢复全量。
+
 ## 配置
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `bridgeProviders` | `[]` | 白名单 provider 列表（空 = 默认**不**自动桥接） |
 | `bypassCache` | `false` | `true` = 强制重算，跳过磁盘缓存 |
-| `maxImages` | `8` | 单请求最多转换张数 |
+| `maxImages` | `8` | 单请求全量证据张数上限（OCR 耗时护栏） |
+| `maxTotalEvidenceChars` | `96000` | 单请求证据文本总字符硬顶（全量+紧凑，约 24K tokens） |
+| `fullEvidenceTurns` | `2` | 最近 N 个用户轮的图片保留全量证据，更早轮次自动降级紧凑 |
 | `langs` | `chi_sim+eng` | tesseract 语言包 |
 | `ocrBudget` | `auto` | `auto` / `small` / `normal` / `large` / `mega` |
 | `ocrNoResize` | `false` | `true` = 跳过 OCR 预算缩放/放大，但保留灰度/对比度/锐化/白边 |

@@ -1,6 +1,6 @@
 {
   "name": "pi-pseudo-vision",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local OCR + color-statistics + pixel-scan + metadata bridge for text-only Pi Coding Agent models. No external vision API.",
   "type": "module",
   "license": "MIT",

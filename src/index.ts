@@ -40,13 +40,7 @@ import { disposeOcr } from "./vision/ocr.ts";
 import { computeColorStats, formatColorStatsBlock } from "./vision/color-stats.ts";
 import { readMeta, formatMetaBlock } from "./vision/meta.ts";
 import { pixelScan, formatPixelScanBlock, pixelScanUniversal, formatUniversalScanBlock } from "./vision/pixel-scan.ts";
-import {
-    collectImagePayloads,
-    imageKey,
-    replaceImagesInMessages,
-    appendVisionContext,
-    latestUserTask,
-} from "./content.ts";
+import { buildAutoBridgeContext } from "./auto-bridge.ts";
 
 /** Per-session mutable state. */
 interface SessionState {
@@ -72,8 +66,12 @@ interface PiPseudoVisionConfig {
     bridgeProviders?: string[];
     /** Re-run the vision tools even when a cached conversion exists. */
     bypassCache?: boolean;
-    /** Max images converted per request. */
+    /** Max images converted per request (full tier; OCR-time guard). */
     maxImages?: number;
+    /** Combined evidence character cap per request. Default 96000 (~24K tokens). */
+    maxTotalEvidenceChars?: number;
+    /** Recent user turns whose images keep full evidence; older degrade to compact. Default 2. */
+    fullEvidenceTurns?: number;
     /** Tesseract language pack. */
     langs?: string;
     /** OCR resolution budget: auto | small | normal | large | mega. */
@@ -107,23 +105,8 @@ function defaultCacheDir(override?: string): string {
     return join(homedir(), ".pi", "agent", "cache", "pi-pseudo-vision");
 }
 
-async function convertOneImage(
-    payload: { bytes: Buffer; mimeType: string },
-    cacheDir: string,
-    config: PiPseudoVisionConfig,
-): Promise<string> {
-    const sha256 = sha256Of(payload.bytes);
-    return imageToText(
-        { sha256, bytes: payload.bytes, mimeType: payload.mimeType },
-        {
-            cacheDir,
-            bypassCache: config.bypassCache ?? false,
-            ocrBudget: config.ocrBudget ?? "auto",
-            langs: config.langs ?? "chi_sim+eng",
-            ocrNoResize: config.ocrNoResize ?? false,
-        },
-    );
-}
+const DEFAULT_TOTAL_EVIDENCE_CHARS = 96_000;
+const DEFAULT_FULL_EVIDENCE_TURNS = 2;
 
 function modelSupportsVision(model: { input?: readonly string[] } | undefined): boolean {
     if (!model || !Array.isArray(model.input)) return false;
@@ -422,37 +405,23 @@ export default function (pi: ExtensionAPI) {
         if (!state.autoConvert && !whitelisted) {
             return; // opt-in only
         }
-        const payloads = collectImagePayloads(event.messages as MsgLike[]);
-        if (payloads.length === 0) return;
-        const max = config.maxImages ?? 8;
-        const slice = payloads.slice(0, max);
-
-        const observations: string[] = [];
-        const replacements = new Map<string, number>();
-        let index = 0;
-        for (const { payload } of slice) {
-            index += 1;
-            const key = imageKey(payload);
-            replacements.set(key, index);
-            try {
-                const text = await convertOneImage(payload, cacheDir, config);
-                observations.push(text);
-            } catch (error) {
-                observations.push(`[图片 ${index} 转换失败：${(error as Error).message}]`);
-            }
-        }
-        state.lastRequestCount = slice.length;
-
-        const task = latestUserTask(event.messages as MsgLike[], slice.length);
-        const observationBlock = appendVisionContext(undefined, observations.join("\n\n---\n\n"), slice.length, task);
-
-        // Replace image blocks with placeholders. The shape is treated as a
-        // plain mutable list of role/content objects since we read & write only
-        // those fields, leaving the rest of the discriminated union intact.
-        const rewritten = replaceImagesInMessages(
-            event.messages as MsgLike[],
-            replacements,
-        );
+        // Tiered, budgeted rewrite (see auto-bridge.ts): recent-turn images
+        // get full evidence within the count/character caps, older-turn images
+        // degrade to compact evidence with re-fetch pointers, and anything
+        // beyond the caps keeps an explicit placeholder — the request never
+        // fails and nothing disappears silently.
+        const result = await buildAutoBridgeContext(event.messages as MsgLike[], {
+            cacheDir,
+            maxImages: config.maxImages ?? 8,
+            maxTotalEvidenceChars: config.maxTotalEvidenceChars ?? DEFAULT_TOTAL_EVIDENCE_CHARS,
+            fullEvidenceTurns: config.fullEvidenceTurns ?? DEFAULT_FULL_EVIDENCE_TURNS,
+            bypassCache: config.bypassCache ?? false,
+            ocrBudget: config.ocrBudget ?? "auto",
+            langs: config.langs ?? "chi_sim+eng",
+            ocrNoResize: config.ocrNoResize ?? false,
+        });
+        if (result === null) return;
+        state.lastRequestCount = result.convertedCount;
 
         // Append the vision observation as a `custom` user message just before
         // the most recent user turn. customType identifies it for downstream
@@ -460,13 +429,13 @@ export default function (pi: ExtensionAPI) {
         const observationMessage = {
             role: "custom" as const,
             customType: "pi-pseudo-vision-context",
-            content: observationBlock,
+            content: result.observation,
             display: true,
             timestamp: Date.now(),
         };
 
         return {
-            messages: [...rewritten, observationMessage as unknown as MsgLike],
+            messages: [...result.messages, observationMessage as unknown as MsgLike],
         };
     });
 

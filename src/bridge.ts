@@ -19,6 +19,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -323,6 +324,73 @@ export async function imageToText(
     ).catch(() => undefined);
 
     return text;
+}
+
+/** Options for the compact (history-tier) evidence path. */
+export interface CompactBridgeOptions {
+    cacheDir: string;
+    ocrBudget?: string;
+    langs?: string;
+    noResize?: boolean;
+}
+
+/**
+ * Compact evidence for history-turn images: header + metadata + colour
+ * statistics + pixel scan, and NO tesseract pass. When the full evidence is
+ * already in the on-disk cache, the fold line points at that file so the
+ * model can re-read it with the `read` tool instead of asking for a resend.
+ */
+export async function imageToCompactText(
+    image: ResolvedImage,
+    options: CompactBridgeOptions,
+): Promise<string> {
+    const [decoded, meta] = await Promise.all([
+        decodeAndColorStats(image.bytes).catch((error) => {
+            console.error("[pi-pseudo-vision] compact color decode failed:", error);
+            return null;
+        }),
+        readMeta(image.bytes).catch((error) => {
+            console.error("[pi-pseudo-vision] compact meta failed:", error);
+            return null;
+        }),
+    ]);
+
+    const width = meta?.meta.width ?? 1;
+    const height = meta?.meta.height ?? 1;
+    const budget = resolveOcrBudget(options.ocrBudget, width, height);
+    const cachePath = join(
+        options.cacheDir,
+        buildVisionCacheKey(image.sha256, budget, { langs: options.langs, noResize: options.noResize }),
+    );
+
+    const blocks: string[] = [];
+    blocks.push(
+        "[pi-pseudo-vision·紧凑] sha256=" + image.sha256.slice(0, 12) + " "
+        + "原图:" + image.mimeType + " " + image.bytes.length + "B（历史轮次，OCR 已折叠）",
+    );
+    if (existsSync(cachePath)) {
+        blocks.push("[OCR 已折叠] 需要这张图的文字内容时，用 read 工具读取完整证据缓存：" + cachePath + "，或请用户重新发送该图片。");
+    } else {
+        blocks.push("[OCR 已折叠] 需要这张图的文字内容时，请请用户重新发送该图片。");
+    }
+    if (decoded !== null) {
+        blocks.push(formatColorStatsBlock(decoded.stats));
+        const backgroundBuckets = decoded.stats.buckets
+            .filter((bucket) => bucket.share >= 0.30)
+            .map((bucket) => bucket.name);
+        const scan = await pixelScanUniversal(decoded.raw, {
+            backgroundBuckets,
+            threshold: 0.15,
+            backgroundCap: 0.9,
+            maxHitsPerBucket: 5,
+        }).catch((error) => {
+            console.error("[pi-pseudo-vision] compact scan failed:", error);
+            return null;
+        });
+        if (scan !== null) blocks.push(formatUniversalScanBlock(scan));
+    }
+    if (meta !== null) blocks.push(formatMetaBlock(meta));
+    return blocks.join("\n\n");
 }
 
 /**

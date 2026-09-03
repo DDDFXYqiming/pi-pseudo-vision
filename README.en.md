@@ -77,13 +77,17 @@ The four `vision_*` tools and `pseudo_vision_convert` are available to the LLM a
 
 Or enable it for a single session with `/pseudo-vision on`.
 
+**Evidence is tiered by turn; over-limit requests degrade instead of failing.** Images from the last `fullEvidenceTurns` user turns run the full pipeline (OCR + colour + scan + meta); older-turn images degrade to compact evidence (no OCR, with a `read` pointer to the full on-disk cache); images beyond `maxImages` or the character budget keep explicit placeholders and the context ends with a `[⚠️ 图片处理摘要]` line telling the model which images did not take effect. Re-attaching an old image in a new turn restores its full tier.
+
 ## Configuration
 
 | Setting | Default | Description |
 |---|---|---|
 | `bridgeProviders` | `[]` | Provider whitelist (empty = **no** auto-bridge by default) |
 | `bypassCache` | `false` | `true` forces recomputation, ignoring the on-disk cache |
-| `maxImages` | `8` | Maximum images converted per request |
+| `maxImages` | `8` | Full-tier image count cap per request (OCR wall-time guard) |
+| `maxTotalEvidenceChars` | `96000` | Combined evidence character cap per request (full + compact, ≈24K tokens) |
+| `fullEvidenceTurns` | `2` | Recent user turns that keep full evidence; older turns degrade to compact |
 | `langs` | `chi_sim+eng` | Tesseract language pack |
 | `ocrBudget` | `auto` | `auto` / `small` / `normal` / `large` / `mega` |
 | `ocrNoResize` | `false` | `true` skips budget resize/upscale but still runs greyscale / contrast / sharpen / white-border |
